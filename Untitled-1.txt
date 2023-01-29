@@ -1,0 +1,454 @@
+/* Object to create time animations created by Josep Antoni Bover.
+ * Created on 08/25/2016
+ * Last modification on 11/01/2021
+ * */
+
+
+
+/* Time functions : https://github.com/mietek/ease-tween/blob/master/src/index.js
+                            https://gist.github.com/mckamey/3783009 */
+
+// Example :
+    /* var Animation = AnimationObject.CreateAnimation([
+            { 'Step' : { X : 100, Y: -100 }}, // The first step is the starting point, and has no delay, no time, and no time function.
+            { 'Step' : { X : 0, Y: 0 }, 'Delay' : 100, 'Time' : 1000, 'TimeFunction' : TimeFunctions.WithoutOut }
+            { 'Step' : { X : 100, Y: -100 }, 'Delay' : 100, 'Time' : 1000, 'TimeFunction' : TimeFunctions.WithoutIn }
+        ], {
+            "Reverse" : true, // Reverse the animation at the end of the steps
+            "Repeat" : 2, // Repeat 2 times
+            "UpdateFunction" : function(Values) { }, // Function that is called every time the values ​​are updated
+            "StartedFunction" : function(Values) { }, // Function called when starting the animation
+            "FuncionTerminado" : function(Values) { }, // Function that is called when the animation ends
+            "Const" : { ... }, // Array of constant variables that you can use from Values.Const
+            "Debug" : false // Display debugging messages to the console. Default is false
+        });*/
+ 
+ // Added 08/26/2017 :
+ // - Fixed bug when using the function ObjectAnimacion_Animacion.Iniciar() more than once, which unadjusted the times (this._Advance was not reset to 0...)
+ // - Created the object AnimationObject_Rand to be used with the values ​​of the steps, so every time you call AnimationObject_Animation.Start() it will use the function rand
+ // with the min/max values ​​specified initially. (1 animation preset with random values ​​:O)
+ 
+"use strict";     
+    
+var TimeFunctions = {
+    Linear : function(Time) { return Time; },
+    SinIn : function(Time) { return 1 - Math.cos(Time * Math.PI / 2); },
+    SinOut : function(Time) { return Math.sin(Time * Math.PI / 2); },
+    SinInOut : function(Time) { return -0.5 * (Math.cos(Math.PI * Time) - 1); },
+    CubicInOut : function(Time) {
+        return (Time < 0.5) ?
+            4.0 * Time * Time * Time :
+            0.5 * Math.pow(2.0 * Time - 2.0, 3.0) + 1.0;
+    },
+    CircularInOut : function(Time) {
+        return (Time < 0.5) ?
+            0.5 * (1.0 - Math.sqrt(1.0 - 4.0 * Time * Time)) :
+            0.5 * (Math.sqrt((3.0 - 2.0 * Time) * (2.0 * Time - 1.0)) + 1.0);
+    }
+};
+    
+    
+var AnimationObject = function() {
+    // Array of animations
+    this.Animations = [];
+    this.OnPause = false;
+    this.Tick = 0;
+    // Update the animations
+    this.Update = function(nTick) {
+        if (this.OnPause === true) { return; }
+// var Tick;
+        if (typeof(nTick) === 'undefined') { this.Tick = Date.now(); }
+        else { this.Tick = nTick;}
+        
+        for (var i = this.Animations.length - 1; i > -1; i--) {
+            if (this.Animations[i].Update(this.Tick) === true) { // If done, remove the animation from the pending animations array
+                this.Animations.splice(i, 1);
+            }
+        }
+    };
+    
+    // Function that pauses ALL animations for this object
+    this.Pause = function() {
+        console.log("AnimationObject::Pause");
+        this.OnPause = true;
+    };
+    
+    // Function that resumes ALL animations for this object
+    this.Resume = function() {
+        console.log("AnimationObject::Resume");
+        this.Tick = Date.now();
+        // I update the last tick of all the animations so that no time elapses since it has been paused
+        for (var i = this.Animations.length - 1; i > -1; i--) {
+            this.Animations[i]._LastTick = this.Tick - 1;
+        }
+        this.OnPause = false;
+    };
+        
+    // Terminate and remove all animations in progress
+    this.Clean = function() {
+        for (var i = this.Animations.length - 1; i > -1; i--) {
+            this.Animations[i].Finish();
+        }
+        this.Animations = [];
+    };
+
+    this.CreateAnimation = function(Steps, Options) {
+        return new AnimationObject_Animation(Steps, Options, this, false);
+    };    
+    
+    // NOTE transitions and repeats don't get along very well...
+    // cannot use the Invert option
+    this.CreateTransition = function(Steps, Options) {
+        return new AnimationObject_Animation(Steps, Options, this, true);
+    };    
+};
+
+
+// Function that contains the data of an animation
+var AnimationObject_Animation = function(ArraySteps, Options, Parent, nTransition) {    
+    this._Parent = Father; // parent AnimationObject
+    this._LastTick = 0; // Last date.now that was obtained with the Update function
+    this._InitialSteps = ArraySteps; // Array with the parameters    
+    this.Steps = []; // Array with the parameters    
+    this._StepPos = 1; // Position within the data array
+    this._Feed = 0; // Advance can be from 0 to 1
+    this._Inverted = nTransition; // Reverse animation (for transitions start with true)
+    this._Finished = false; // Animation finished
+    this.Debug = false; // Display debugging messages to the console
+    this._Options = { Repeat : 0, Reverse : false, UpdateFunction : function(Values) { }, StartedFunction : function(Values) { }, DoneFunction : function(Values) { }, Debug : false };
+    if (typeof (Options) !== 'undefined') {
+        if (typeof Options.Repeat !== "undefined") { this._Options.Repeat = Options.Repeat; }
+        if (typeof Options.Invest !== "undefined") { this._Options.Invest = Options.Invest; }
+        if (typeof Options.UpdateFunction !== "undefined") {
+            this._Options.FunctionUpdate = Options.FunctionUpdate;
+        }
+        if (typeof Options.StartedFunction !== "undefined") { this._Options.StartedFunction = Options.StartedFunction; }
+        if (typeof Options.DoneFunction !== "undefined") {
+            this._Options.FuncionTerminado = Options.FuncionTerminado;  
+        }
+        if (typeof Options.Const !== "undefined") { this.Const = Options.Const; }
+        if (typeof Options.Debug !== "undefined") { this.Debug = Options.Debug; }
+    }
+    // Fill in the data for each step
+/* for (var Step in this.Steps) {
+        if (typeof this.Steps[Step].Time === "undefined") { this.Steps[Step].Time = 1; }
+        if (typeof this.Steps[Step].Delay === "undefined") { this.Steps[Step].Delay = 0; }
+        if (typeof this.Steps[Step].TimeFunction === "undefined") { this.Steps[Step].TimeFunction = TimeFunctions.Linear; }
+    }*/
+
+    // Check if there are random values ​​I start them
+    for (var i = 0; i < this._InitialSteps.length; i++) {        
+        var nStep = { };
+        for (var Index in this._InitialSteps[i]) {   
+            nStep[Index] = { };
+            for (var Index2 in this._InitialSteps[i][Index]) {   
+                if (this._InitialSteps[i][Index][Index2] instanceof AnimationObject_Rand) {
+                    nStep[Index][Index2] = this._InitialSteps[i][Index][Index2].Start();
+                }
+                else {
+                    nStep[Index][Index2] = this._InitialSteps[i][Index][Index2];
+                }
+            }
+        }
+        if (typeof this._InitialSteps[i].Delay !== "undefined") { nStep.Delay = this._InitialSteps[i].Delay; }
+        else { nStep.Delay = 0; }
+        if (typeof this._InitialSteps[i].Time !== "undefined") { nStep.Time = this._InitialSteps[i].Time; }
+        else { nStep.Time = 1; }
+        if (typeof this._InitialSteps[i].TimeFunction !== "undefined") { nStep.TimeFunction = this._InitialSteps[i].TimeFunction; }
+        else { nStep.TimeFunction = TimeFunctions.Linear; }
+        this.Steps.push( nStep );
+    }
+    
+    this._OrigStep = this.Steps[this._StepPos - 1]; // Initial array of steps
+    this._DestStep = this.Steps[this._StepPos]; // Next array of steps
+    this._Delay = this._DestStep.Delay;
+    
+    
+
+    // Starting initials
+    for (var Index in this._StepOrig.Step) {                            
+        this[Index] = this._OrigStep.Step[Index];
+    }
+    // use AnimationObject_Animation.AssignInitialValues
+    // this._Options.UpdateFunction(this);
+    
+    this.Start = function() {
+        if (this.Debug !== false) console.log("AnimationObject.Start");
+        var AniCreated = false;
+        // Add the animation to the parent's animations array (if it doesn't exist)
+        for (var i = 0; i < this._Parent.Animations.length; i++) {
+            if (this._Parent.Animations[i] === this) {
+                AniCreated = true;
+                break;
+            }
+        }        
+        if (AniCreated === false) { // Not animating
+            this._Parent.Animations.push(this);
+            
+// this.Steps = this._InitialSteps;
+            
+            this._StepPos = 1;
+            this._OrigStep = this.Steps[this._StepPos - 1];
+            this._DestStep = this.Steps[this._StepPos];
+            this._Delay = this._DestStep.Delay;
+            this._LastTick = 0;
+            this._Feed = 0;
+            // TODO : you have to copy the array of steps to execute the AnimationObject_Rand, and reload it every copy at startup...
+            
+            // Look for variables that are an instance of AnimationObject_Rand and run rand
+            for (var i = 0; i < this._InitialSteps.length; i++) {
+                for (var Value in this._InitialSteps[i].Step) {
+                    if (this._InitialSteps[i].Step[Value] instanceof AnimationObject_Rand) {
+                        this.Steps[i].Step[Value] = this._InitialSteps[i].Step[Value].Start();
+                    }
+                }
+            }
+            
+            this._Options.StartedFunction(this);
+        }
+        this._Finished = false;
+    };
+    
+    // Dirty... but you won't mess with it.. 2mb
+    this.Done = function() {
+        return this._Finished;
+    };
+    
+    /* Assign initial animation values ​​to variables and run the first UpdateFunction */
+    this.AssignInitialValues ​​= function() {
+        this._Options.UpdateFunction(this);
+    };
+    
+    
+    // Start the transition (from start to finish, or from end to start
+    this.Transition = function() {
+        this._Inverted = !this._Inverted;
+
+        var AniCreated = false;
+        // Add the animation to the parent's animations array (if it doesn't exist)
+        for (var i = 0; i < this._Parent.Animations.length; i++) {
+            if (this._Parent.Animations[i] === this) {
+                AniCreated = true;
+                break;
+            }
+        }
+        if (AniCreated === false) { // Not animating
+            this._Parent.Animations.push(this);
+            if (this._Inverted === false) {
+                // If it's in the final step, I assign the current step to the first step
+                this._StepPos = 1;
+                this._OrigStep = this.Steps[this._StepPos - 1];
+                this._DestStep = this.Steps[this._StepPos];
+                this._Delay = this._DestStep.Delay;
+            }
+            else {
+                // If it is in the initial step, assign the current step to the last step
+                this._PosSteps = this.Steps.length - 1;
+                this._OrigStep = this.Steps[this._PosSteps];
+                this._DestStep = this.Steps[this._StepPos - 1];
+                this._Delay = this._OrigStep.Delay;
+            }
+            this._Feed = 0;
+            this._LastTick = 0;
+        }
+        else { // Animation in progress
+            var StepD = this._StepDest;
+            var StepO = this._PasoOrig;
+            this._StepDest = StepO;
+            this._StepOrig = StepD;
+/* this.Cancel();*/
+            var Advance = Math.abs(this._Advance - 1);
+            this._Advance = Advance;
+            var TimeFunction = this._DestStep.TimeFunction(this._Advance);            
+            for (var Index in this._StepOrig.Step) {                    
+                this[Index] = StepO[Index] - (StepO[Index] - StepD[Index]) * TimeFunction;
+            }            
+        }
+        
+        this._Finished = false;
+        
+    };
+
+    // Function that ends the animation and leaves it as it is
+    this.Cancel = function() {
+        this._Options.StartedFunction(this);
+        this._Options.FuncionTerminado(this);
+        this._Finished = true;                       
+        if (this.Debug !== false) console.log("AnimationObject.Cancel");
+    };
+
+    // Function that ends the animation and leaves the values ​​in their final state
+    this.Finish = function() {
+        if (this.Debug !== false) console.log("AnimationObject.End");
+        // I look for the variables that are an instance of ObjectAnimacion_Rand and I put the maximum value to have some reference value in the future functions Started and Finished
+        for (var i = 0; i < this.Steps.length; i++) {
+            this.Steps.forEach(function(Value, Index, Array) {
+                if (Value instanceof AnimationObject_Rand) {
+                    this.Steps[Index] = Value.Max;
+                }
+            });
+        }        
+        
+        this._Options.StartedFunction(this);
+        for (var Index in this.Steps[this.Steps.length - 1].Step) {                    
+            this[Index] = this.Steps[this.Steps.length - 1].Step[Index];
+        }                        
+        this._Options.FuncionTerminado(this);
+        this._Finished = true;            
+        this._Options.UpdateFunction(this);
+    };
+
+    this.Update = function(t) {
+        if (this._Finished === true) { return true; }
+        var Ret = 0;
+        if (this._LastTick !== 0) {
+            (this._Inverted === false) ? Ret = this.UpdateNormal(t) : Ret = this.UpdateInverted(t);
+        }
+        this._LastTick = t;
+        returnRet;
+    };
+
+    // Update the animation
+    this.UpdateNormal = function(t) {
+        // Time from the last frame to this frame
+        var TimeFrame = t - this._LastTick;
+        // Apply the delay if it exists
+        if (this._Delay > 0) {
+            this._Delay = this._Delay - TimeFrame;
+        }
+        // Advance the animation
+        else {
+            // Add or subtract the advance of the animation
+            this._Advance += (TimeFrame / this._DestStep.Time);
+// console.log(this._Preview);
+            var TimeFunction = this._DestStep.TimeFunction(this._Advance);
+            // Step to complete
+            if (this._Forward < 1 && this._Forward > -1) {
+                for (var Index in this._StepDest.Step) {                    
+                    this[Index] = this._OrigStep.Step[Index] - (this._OrigStep.Step[Index] - this._DestStep.Step[Index]) * TimeFunction;
+                }
+                this._Options.UpdateFunction(this);
+            }
+            // Step completed
+            else {
+                // Final values ​​of this step
+                for (var Index in this._StepDest.Step) {                    
+                    this[Index] = this._DestStep.Step[Index];
+                }    
+                this._Options.UpdateFunction(this);
+                // Go to the next step
+                this._StepPos++;
+                if (this._PosSteps < this.Steps.length) {
+                    this._OrigStep = this.Steps[this._StepPos - 1];
+                    this._DestStep = this.Steps[this._StepPos];
+                    this._Delay = this._DestStep.Delay;                    
+                    this._Feed = 0;
+                }
+                // no more steps
+                else {
+                    if (this._Options.Invert === false) {
+                        // no more repetitions
+                        if (this._Options.Repeat <= 0) {
+                            this._Options.FuncionTerminado(this);
+                            this._Finished = true;
+// console.log("--------------");
+                        }
+                        // next iteration
+                        else {
+                            this._Options.Repeat --;
+                            this._StepPos = 1;
+                            this._OrigStep = this.Steps[this._StepPos - 1];
+                            this._DestStep = this.Steps[this._StepPos];                                
+                            this._Delay = this._DestStep.Delay;                    
+                            this._Feed = 0;
+                        }
+                    }
+                    // reverse the animation
+                    else {
+                        this._PosSteps = this.Steps.length - 1;
+                        this._OrigStep = this.Steps[this._PosSteps];
+                        this._DestStep = this.Steps[this._StepPos - 1];                                
+                        this._Delay = this._OrigStep.Delay;                    
+                        this._Feed = 0;
+                        this._Inverted = true;
+                    }
+                }
+            }
+        }                
+        return this._Finished;
+    };
+    
+    // Update the animation in reverse
+    this.UpdateInverted = function(t) {
+// console.log("UpdateInverted");
+        // Time from the last frame to this frame
+        var TimeFrame = t - this._LastTick;
+        // Add or subtract the advance of the animation
+        this._Forward += (TimeFrame / this._OrigStep.Time);
+        var TimeFunction = this._DestStep.TimeFunction(this._Advance);
+        // Step to complete
+        if (this._Forward < 1 && this._Forward > -1) {
+            for (var Index in this._StepDest.Step) {                    
+                this[Index] = this._OrigStep.Step[Index] - (this._OrigStep.Step[Index] - this._DestStep.Step[Index]) * TimeFunction;
+            }
+            this._Options.UpdateFunction(this);
+        }
+        // Step completed
+        else {
+            // Apply the delay if it exists
+            if (this._Delay > 0) {
+                this._Delay = this._Delay - TimeFrame;
+            }
+            // Next step
+            else {
+                // Final values ​​of this step
+                for (var Index in this._StepDest.Step) {                    
+                    this[Index] = this._DestStep.Step[Index];
+                }    
+                this._Options.UpdateFunction(this);
+                // Go to the next step
+                this._PosSteps --;
+                if (this._StepPos > 0) {
+                    this._OrigStep = this.Steps[this._PosSteps];
+                    this._DestStep = this.Steps[this._StepPos - 1];
+                    this._Delay = this._OrigStep.Delay;                    
+                    this._Feed = 0;
+                }
+                // no more steps
+                else {
+                    if (this._Options.Invert === true) {
+                        this._Inverted = false;
+                    }
+                    // There are no more repetitions
+                    if (this._Options.Repeat === 0) {
+                        this._Options.FuncionTerminado(this);
+                        this._Finished = true;
+                    }
+                    else {
+                        this._Options.Repeat --;
+                        this._StepPos = 1;
+                        this._OrigStep = this.Steps[this._StepPos - 1];
+                        this._DestStep = this.Steps[this._StepPos];                                
+                        this._Feed = 0;
+                        this._Delay = this._OrigStep.Delay;                                            
+                    }
+                }
+            }
+        }
+                
+        this._LastTick = t;
+        return this._Finished;
+    };    
+};
+
+
+
+// Object that will serve as a link to rand a value each time the start function of the AnimationObject_Animation is executed
+var AnimationObject_Rand = function(Max, Min) {
+    this.Min = Min;
+    this.Max = Max;
+    this.Start = function() {
+        this.Value = Rand(Max, Min);
+        return this.Value;        
+    };
+};
